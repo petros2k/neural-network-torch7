@@ -1,8 +1,10 @@
-NeuralNetwork = {}
-
 require "dataReader"
 
+NeuralNetwork = {}
+
 --************************** Neural Network *********************--
+function NeuralNetwork.doNothing()
+end
 
 -- create a neural network
 -- struct = { {size, f} }
@@ -18,7 +20,7 @@ function NeuralNetwork.createNeuralNet( struct , costF)
 
 	net.nLayer = table.getn(struct)
 
-	for i,s in ipairs(struct) do
+	for i,s in pairs(struct) do
 		net.F[i] = s.f
 		if struct[i].bias == 1 then
 			net.Wb[i] = torch.Tensor(1, s.size):fill(0)
@@ -43,12 +45,11 @@ function NeuralNetwork.feedForward( net , X )
 
 -- other layers
 	for j = 2,net.nLayer do
-		local Wt = net.W[j-1]:t()
-		local Z = torch.mm(Wt, net.Y[j-1])
+		local Z = torch.mm(net.W[j-1]:t(), net.Y[j-1])
 		-- if using bias
 		if net.Wb[j] ~= nil then
 			local T = torch.mm(net.Wb[j]:t(),torch.Tensor(1,batchSize):fill(1))
-			Z:add(T)   
+			Z:add(T)
 		end
 		net.Y[j] = net.F[j].apply(Z)
 	end
@@ -172,6 +173,7 @@ NeuralNetwork.squaredCost = {
 NeuralNetwork.crossEntropyCost = {
 	apply = function( Y, T)
 		local D = torch.log(Y)
+		--if _DEBUG_ then pause() end
 		D:cmul(T)
 		return -1 * D:sum()
 	end,
@@ -242,19 +244,21 @@ end
 
 function test2()
 	DataReader.createData("data.txt")
-	Data = DataReader.loadData("data.txt")
+	Data = DataReader.loadCompleteData("data.txt")
 
-	net = NeuralNetwork.createNeuralNet( { {size=2,f=nil,bias=0} , {size=2,f=NeuralNetwork.logistic,bias=1} , {size=2,f=NeuralNetwork.normExp,bias=1} } , NeuralNetwork.crossEntropyCost)
+	net = NeuralNetwork.createNeuralNet( { {size=500,f=nil,bias=0} , {size=200,f=NeuralNetwork.logistic,bias=1} , {size=2,f=NeuralNetwork.normExp,bias=1} } , NeuralNetwork.crossEntropyCost)
 
-	net.W[1] = torch.Tensor( { {0.1,0.2},{0.2,0.3} } )
-	net.W[2] = torch.Tensor( { {0.2,0.1},{0.1,0.2} } )
-	net.Wb[2] = torch.Tensor( {0.1,0.2} ):resize(1,2)
-	net.Wb[3] = torch.Tensor( {0.3,0.4} ):resize(1,2)
+	--net.W[1] = torch.Tensor( { {0.1,0.2},{0.2,0.3} } )
+	--net.W[2] = torch.Tensor( { {0.2,0.1},{0.1,0.2} } )
+	--net.Wb[2] = torch.Tensor( {0.1,0.2} ):resize(1,2)
+	--net.Wb[3] = torch.Tensor( {0.3,0.4} ):resize(1,2)
 
-	NeuralNetwork.gradientDescent( net, Data.X, Data.T, 100, 10000, 0.1)
+	NeuralNetwork.gradientDescent( net, Data.X, Data.T, 100, 1000000, 0.1)
 	
 end
 
 --*********************************************************************
---test1()
+
+-- test2()
+
 return NeuralNetwork

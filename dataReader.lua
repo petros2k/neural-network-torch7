@@ -6,7 +6,7 @@ DataReader = {}
 - line 1: [num_of_examples] [input_dim] [output_dim]
 - line 2: 
 ]]--
-function DataReader.loadNormalData( path )
+function DataReader.loadCompleteData( path )
 	local file = torch.DiskFile.new(path)
 	local Data = {}
 	
@@ -39,29 +39,28 @@ function DataReader.loadCompactData( path )
 	
 -- read the first 3 integer numbers
 	local buff = file:readInt(3)
-	local nSample = buff[1]
-	local nInDim = buff[2]
-	local nOutDim = buff[3]
-
-	print(nSample)
-	print(nInDim)
-	Data.X = torch.Tensor(nInDim, nSample):fill(0)
-	Data.T = torch.Tensor(nOutDim, nSample):fill(0)
+	Data.nSample = buff[1]
+	Data.nInDim = buff[2]
+	Data.nOutDim = buff[3]
+	Data.X = {}
+	Data.T = {}
 
 -- read next
-	for i = 1, nSample do
+	for i = 1, Data.nSample do
+		Data.X[i] = {}
 		local xlen = file:readInt(1)[1]
 		for j = 1,xlen do
 			local idx = file:readInt(1)[1]
 			local value = file:readDouble(1)[1]
-			Data.X[idx][i] = value
+			Data.X[i][idx] = value
 		end
 
+		Data.T[i] = {}
 		local tlen = file:readInt(1)[1]
 		for j = 1,tlen do
 			local idx = file:readInt(1)[1]
 			local value = file:readDouble(1)[1]
-			Data.T[idx][i] = value
+			Data.T[i][idx] = value
 		end
 	end
 	
@@ -70,21 +69,21 @@ function DataReader.loadCompactData( path )
 	return Data
 end
 
-
 -- create fake data to test
 function DataReader.createData( path )
 	local file = torch.DiskFile.new(path, "w")
 	local nSample = 1000
-	local nInDim = 2
+	local nInDim = 500
 	local nOutDim = 2
 	file:writeInt(nSample)
 	file:writeInt(nInDim)
 	file:writeInt(nOutDim)
 
 	for i = 1,nSample do
-		local X = torch.rand(2)
-		file:writeDouble(X[1])
-		file:writeDouble(X[2])
+		local X = torch.rand(nInDim)
+		for j = 1,nInDim do
+			file:writeDouble(X[j])
+		end
 
 		local Y = torch.Tensor({0,1})
 		if X[1] * X[2] < 0.1 then
@@ -99,7 +98,5 @@ function DataReader.createData( path )
 end
 
 --*****************************************************************
-
-data = DataReader.loadCompactData("data/data.test")
 
 return DataReader
