@@ -71,9 +71,8 @@ function updateWeights( net, DW , DWb, rate)
 			DeltaW[i] = torch.Tensor(DW[i]:size()):fill(0)
 		end
 		DeltaW[i]:mul(momentum)
-		DeltaW[i]:add(DW[i])		
-		local D = torch.mul(DeltaW[i],-rate)
-		net.W[i]:add(D)
+		DeltaW[i]:add(torch.mul(DW[i],-1))
+		net.W[i]:add(torch.mul(DeltaW[i],rate))
 	end
 
 	for i = 1,net.nLayer do
@@ -82,13 +81,10 @@ function updateWeights( net, DW , DWb, rate)
 				DeltaWb[i] = torch.Tensor(DWb[i]:size()):fill(0)
 			end
 			DeltaWb[i]:mul(momentum)
-			DeltaWb[i]:add(DWb[i])		
-			local D = torch.mul(DeltaWb[i],-rate)
-			net.Wb[i]:add(D)
+			DeltaWb[i]:add(torch.mul(DWb[i],-1))
+			net.Wb[i]:add(torch.mul(DeltaWb[i],rate))
 		end
 	end
-
-
 end
 
 -- training net

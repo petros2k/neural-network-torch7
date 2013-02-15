@@ -97,6 +97,8 @@ function NeuralNetwork.updateWeights( net, DW , DWb, rate)
 	for i = 1,net.nLayer-1 do
 		DW[i]:mul(-rate)
 		net.W[i]:add(DW[i])
+	end
+	for i = 1,net.nLayer do
 		if net.Wb[i] ~= nil then
 			DWb[i]:mul(-rate)
 			net.Wb[i]:add(DWb[i])
@@ -206,6 +208,8 @@ function NeuralNetwork.gradientDescent( net, X, T, batchSize, nEpoch, rate )
 		
 		NeuralNetwork.feedForward(net,X)
 		print(net.costF.apply(net.Y[net.nLayer],T))
+
+		collectgarbage()
 	end
 end
 
