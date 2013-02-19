@@ -1,4 +1,4 @@
-require 'neuralNet'
+require 'mlp'
 require 'dataReader'
 
 vocabSize = 251
@@ -6,7 +6,7 @@ nWEUnits = 50
 nHidUnits = 200
 nGram = 4
 
-momentum = 0.9
+momentum = 0.9 
 stdInitW = 0.01
 
 DeltaW = {}
@@ -21,17 +21,17 @@ function createNeuralNet()
 			f = nil,
 			bias = 0 },
 		{	size = nWEUnits * (nGram-1),
-			f = NeuralNetwork.logistic,
+			f = AtvFunc.logistic,
 			bias = 0 },
 		{	size = nHidUnits,
-			f = NeuralNetwork.logistic,
+			f = AtvFunc.logistic,
 			bias = 1 },
 		{	size = vocabSize,
-			f = NeuralNetwork.normExp,
+			f = AtvFunc.normExp,
 			bias = 1}
 	}
 
-	net = NeuralNetwork.createNeuralNet( struct, NeuralNetwork.crossEntropyCost )
+	local net = mlp:new( struct, CostFunc.crossEntropyCost )
 
 -- init weights
 	-- words -> word embeding
@@ -54,8 +54,6 @@ end
 
 -- update weights
 function updateWeights( net, DW , DWb, rate)
-	--NeuralNetwork.updateWeights(net, DW, DWb, rate)
-
 -- word -> word embedding
 	local A = DW[1][{{1,vocabSize},{1,nWEUnits}}]:clone()
 	A:add(DW[1][{{vocabSize+1,2*vocabSize},{nWEUnits+1,2*nWEUnits}}])
@@ -88,31 +86,27 @@ function updateWeights( net, DW , DWb, rate)
 end
 
 -- training net
-function oneStepGradientDescent( net, X, T , rate)
-	NeuralNetwork.feedForward(net, X)
-	local DW,DWb = NeuralNetwork.backpropagate(net, T)
-	updateWeights(net, DW, DWb, rate)
-end
-
 function gradientDescent( net, TrainData, ValidData, batchSize, nEpoch, rate )
 	local nSample = TrainData.nSample
 	local VData = unpackData(ValidData, 1, ValidData.nSample)
 
 	for i = 1,nEpoch do
-		if math.mod(i,10) == 0 then
-			NeuralNetwork.feedForward(net,VData.X)
-			print(net.costF.apply(net.Y[net.nLayer],VData.T) / VData.T:size()[2])
+		if math.mod(i,1) == 0 then
+			local Y = net:feedforward(VData.X)
+			print(net.costF.apply(Y,VData.T) / VData.T:size()[2])
 			collectgarbage()
 		end
 
 		for j = 1,nSample/batchSize do
 			local fragData = unpackData(TrainData, (j-1)*batchSize+1, j*batchSize)			
-			oneStepGradientDescent( net, fragData.X, fragData.T, rate )
-			if math.mod(j,300) == 0 then
-				print('collect garbage')
+			net:feedforward(fragData.X)
+			local DW,DWb = net:backpropagate( fragData.T)
+			updateWeights(net, DW, DWb, rate)
+			if math.mod(j,100) == 0 then
+				--print('collect garbage')
 				collectgarbage()
 			end
-		end		
+		end
 
 		collectgarbage()
 	end
@@ -141,8 +135,8 @@ end
 -- main
 function main()
 	print("load data...")
-	local TrainData = DataReader.loadCompactData("data/data.train")
-	local ValidData = DataReader.loadCompactData("data/data.valid")
+	local TrainData = DataReader.loadCompactData("nGramData/data.train")
+	local ValidData = DataReader.loadCompactData("nGramData/data.valid")
 	local net = createNeuralNet()
 
 	print("training...")

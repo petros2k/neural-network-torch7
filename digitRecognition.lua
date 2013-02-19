@@ -1,5 +1,4 @@
-require 'neuralNet'
-require 'debugger'
+require 'mlp'
 
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -25,7 +24,7 @@ end
 
 -- dC/dwi = dE/dwi + wdCoeff * wi
 function calDLostDW( net, T, config )
-	local DW, DWb = NeuralNetwork.backpropagate( net, T )
+	local DW, DWb = net:backpropagate( T )
 	
 	for i = 1, net.nLayer-1 do
 		DW[i]:add(torch.mul(net.W[i], config.wdCoeff))
@@ -83,13 +82,13 @@ function gradientDescent( net, TData, VData, TestData, config)
 	for i = 1, config.nEpoch do
 		print('------ epoch ' .. i)
 		if math.mod(i,1) == 0 then
-			NeuralNetwork.feedForward(net,VData.X)
+			local Y = net:feedforward(VData.X)
 			print("validate " .. calLost(net , VData.T, config))
-			print("error rate " .. errorRate( net.Y[net.nLayer], VData.T))
+			print("error rate " .. errorRate( Y, VData.T))
 
-			NeuralNetwork.feedForward(net, TestData.X)
+			Y = net:feedforward(TestData.X)
 			print("validate " .. calLost(net , TestData.T, config))
-			print("error rate " .. errorRate( net.Y[net.nLayer], TestData.T))
+			print("error rate " .. errorRate( Y, TestData.T))
 			collectgarbage()
 		end
 
@@ -99,13 +98,13 @@ function gradientDescent( net, TData, VData, TestData, config)
 
 			-- test on batch
 			if math.mod(j,100) == 0 then 
-				NeuralNetwork.feedForward(net,X)
+				net:feedforward(X)
 				print("test batch " .. j .. " : " .. calLost(net , T, config))
 				collectgarbage()
 			end
 
 			-- one step gradient descent 
-			NeuralNetwork.feedForward( net, X )
+			net:feedforward( X )
 			local DW, DWb = calDLostDW( net, T, config )
 			updateWeights( net, DW, DWb, DeltaW, DeltaWb, config )		
 		end
@@ -169,7 +168,7 @@ end
 
 -- create net
 function createNeuralNet( struct )
-	net = NeuralNetwork.createNeuralNet( struct, NeuralNetwork.crossEntropyCost )
+	local net = mlp:new( struct, CostFunc.crossEntropyCost )
 	
 	-- init weights
 	for i = 1, net.nLayer-1 do
@@ -199,17 +198,17 @@ function main()
 	config.learnRate = 0.1
 	config.nEpoch = 50
 	config.batchSize = 100
-	config.wdCoeff = 0
+	config.wdCoeff = 0 -- don't know why it doesn't work (need to check / test it again)
 
 	local struct = {
 		{	size = nInputUnits,
 			f = nil,
 			bias = 0 },
 		{	size = nHidUnits,
-			f = NeuralNetwork.logistic,
+			f = AtvFunc.logistic,
 			bias = 1 },
 		{	size = nOutputUnits,
-			f = NeuralNetwork.normExp,
+			f = AtvFunc.normExp,
 			bias = 1}
 	}
 
