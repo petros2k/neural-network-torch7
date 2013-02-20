@@ -143,4 +143,4 @@ function main()
 	gradientDescent( net, TrainData, ValidData, 100, 10000, 0.1 )
 end
 
-main()
+--main()
