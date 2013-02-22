@@ -44,11 +44,11 @@ function mlp:new( struct , costF )
 end
 
 function mlp:initWeights() 
-	for i = 1,self.nLayers-1 do
+	for i = 1,self.nLayer-1 do
 		self.W[i] = torch.randn(self.W[i]:size())
 		self.W[i]:mul(0.01)
 	end
-	for i = 1,self.nLayer-1 do
+	for i = 1,self.nLayer do
 		if self.Wb[i] ~= nil then
 			self.Wb[i] = torch.randn(self.Wb[i]:size())
 			self.Wb[i]:mul(0.01)
@@ -115,34 +115,62 @@ end
 
 --***************** update weight ***************--
 -- newW = oldW + rate * DeltaW
-function mlp:updateWeights( DeltaW , DeltaWb, rate)
-	for i = 1,self.nLayer-1 do
-		self.W[i]:add(torch.mul(DeltaW[i],rate))
-	end
-	for i = 1,self.nLayer do
-		if self.Wb[i] ~= nil then
-			self.Wb[i]:add(torch.mul(DeltaWb[i],rate))
+function mlp:updateWeights( DW, DWb, rate, DeltaW , DeltaWb, momentum)
+
+	for i = 1, self.nLayer-1 do
+		if momentum == nil then
+			net.W[i]:add(torch.mul(DW[i], -rate))
+		else
+			DeltaW[i]:mul(momentum)
+			DeltaW[i]:add(torch.mul(DW[i],-1))
+			self.W[i]:add(torch.mul(DeltaW[i], rate))
 		end
 	end
+
+	for i = 1, self.nLayer do
+		if self.Wb[i] ~= nil then
+			if momentum == nil then
+				self.Wb[i]:add(torch.mul(DWb[i], -rate))
+			else
+				DeltaWb[i]:mul(momentum)
+				DeltaWb[i]:add(torch.mul(DWb[i],-1))
+				self.Wb[i]:add(torch.mul(DeltaWb[i], rate))
+			end
+		end
+	end	
 end
 
 --******************************* train networks with gradient descent method *************************
-function mlp:gradientDescent( X, T, batchSize, nEpoch, rate )
+function mlp:gradientDescent( X, T, batchSize, nEpoch, rate , momentum)
 	local nSample = X:size()[2]
 
+	local DeltaW = {}
+	local DeltaWb = {}
+
+	for i = 1, self.nLayer-1 do
+		DeltaW[i] = torch.Tensor(self.W[i]:size()):fill(0)		
+	end
+	for i = 1, self.nLayer do
+		if self.Wb[i] ~= nil then
+			DeltaWb[i] = torch.Tensor(self.Wb[i]:size()):fill(0)
+		end
+	end
+
+	Y = self:feedforward(X)
+	print(self.costF.apply(Y,T,self))
 	for i = 1,nEpoch do
+		print(i)
 		for j = 1,nSample/batchSize do
 			local subX = X[{{},{(j-1)*batchSize+1,j*batchSize}}]
 			local subT = T[{{},{(j-1)*batchSize+1,j*batchSize}}]
-			self:feedForward( subX)
+			self:feedforward( subX)
 			DW,DWb = self:backpropagate( subT)
-			self:updateWeights( DW, DWb, rate)
+			self:updateWeights( DW, DWb, rate, DeltaW, DeltaWb, momentum)
+			collectgarbage()
 		end
 		
-		Y = self:feedForward(X)
-		print(self.costF.apply(Y,T,net))
-
-		collectgarbage()
+		Y = self:feedforward(X)
+		print(self.costF.apply(Y,T,self))
 	end
 end
 
@@ -157,9 +185,9 @@ function mlp:checkGradient( X , T )
 
 	for i = 1,self.nLayer-1 do
 		self.W[i][{{1},{1}}]:add(eps)
-		local rPlus = self.costF.apply(self:feedforward(X),T,net)
+		local rPlus = self.costF.apply(self:feedforward(X),T,self)
 		self.W[i][{{1},{1}}]:add(-2*eps)
-		local rMinus = self.costF.apply(self:feedforward(X),T,net)
+		local rMinus = self.costF.apply(self:feedforward(X),T,self)
 		self.W[i][{{1},{1}}]:add(eps)
 
 		--print((rPlus - rMinus) / (2*eps))
@@ -175,9 +203,9 @@ function mlp:checkGradient( X , T )
 		for i = 1,self.nLayer do
 			if self.Wb[i] ~= nil then
 				self.Wb[i][{{1},{1}}]:add(eps)
-				local rPlus = self.costF.apply(self:feedforward(X),T,net)
+				local rPlus = self.costF.apply(self:feedforward(X),T,self)
 				self.Wb[i][{{1},{1}}]:add(-2*eps)
-				local rMinus = self.costF.apply(self:feedforward(X),T,net)
+				local rMinus = self.costF.apply(self:feedforward(X),T,self)
 				self.Wb[i][{{1},{1}}]:add(eps)
 
 				--print((rPlus - rMinus) / (2*eps))

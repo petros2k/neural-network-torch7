@@ -1,4 +1,6 @@
 require 'mlp'
+require 'image'
+--require 'debugger'
 
 -- sAutoEncoder is a subclass of mlp
 sAutoEncoder = {}
@@ -10,17 +12,18 @@ function sAutoEncoder:print()
 	print('sparse auto encoder')
 end
 
+
 --************************** cost function **********************--
 CostFunction = {
-	beta = 0.001,
-	rho = 0.05,
+	beta = 3,
+	rho = 0.01,
 		
 	apply = function ( Y, T , net)
 		-- squared lost
 		local D = torch.mul(Y, -1)
 		D:add(T)
 		local lost = 0.5 * D:pow(2):sum() / T:size()[2]
-		
+
 		-- regularity
 		local reg = 0
 		local rho = CostFunction.rho
@@ -33,18 +36,19 @@ CostFunction = {
 				local R2 = torch.Tensor(net.Rho[i]:size()):fill(1-rho)
 				R2:cdiv(torch.mul(net.Rho[i],-1):add(1))
 				R2:log()
-				R2:mul(1-rho)
+				R2:mul(1-rho)				
 				reg = reg + R1:sum() + R2:sum()
 			end
 		end
 
-		return lost + beta*reg
+		return lost + CostFunction.beta*reg
 	end,
 
 	derivativeZ = function ( Y, T, Z, f)
 		local dZ = f.derivative(Y, Z)
 		local negT = torch.mul(T, -1)
 		dZ:cmul( torch.add(Y, negT) )
+		dZ:mul(1 / T:size()[2])
 		return dZ
 	end
 }
@@ -66,14 +70,15 @@ end
 
 --****************************** feedforward ******************************--
 function sAutoEncoder:feedforward(X)
-	mlp.feedforward(self)
+	mlp.feedforward(self, X)
 
 	-- update Rho
 	for i = 1,self.nLayer do
-		if self.Rho ~= nil then
+		if self.Rho[i] ~= nil then
 			self.Rho[i] = torch.mean(self.Y[i],2)
 		end
 	end
+	return self.Y[self.nLayer]
 end
 
 --***************************** backpropagate ******************************--
@@ -92,6 +97,16 @@ function sAutoEncoder:backpropagate( T )
 	for i = self.nLayer-1,2,-1 do
 		local dYdZ = self.F[i].derivative( self.Y[i], nil )
 		DZ[i] = torch.mm(self.W[i], DZ[i+1])
+		if self.Rho[i] ~= nil then
+			local R1 = torch.Tensor(DZ[i]:size()):fill(self.costF.rho)
+			R1:cdiv(torch.mm(self.Rho[i], torch.Tensor(1,batchSize):fill(1)))
+			R1:mul(-1)
+			local R2 = torch.Tensor(DZ[i]:size()):fill(1-self.costF.rho)
+			R2:cdiv(torch.mm(self.Rho[i], torch.Tensor(1,batchSize):fill(1)):mul(-1):add(1))
+			R1:add(R2):mul(self.costF.beta):mul(1/batchSize)
+			DZ[i]:add(R1)
+		end
+
 		DZ[i]:cmul(dYdZ)
 	end
 
@@ -110,12 +125,62 @@ function sAutoEncoder:backpropagate( T )
 	return DW, DWb
 end
 
+--*************************** visualize *************************--
+-- only for 1-hidden-layer net
+function sAutoEncoder:visualize( nRow, nCol )
+	for i = 1,6 do --self.W[2]:size(2) do
+		local I = self.W[1][{{},i}]:clone():resize(nRow,nCol)
+		--local s = math.sqrt(torch.cmul(I,I):sum())
+		--I:div(s)
+		image.display(I)
+		print(I)
+	end
+end
+
+--***************************************** test *****************************************--
+iRow = 512
+iCol = 512
+pRow = 8
+pCol = 8
+nImages = 10
+nPatch = 10000
+
+--torch.setdefaulttensortype('torch.FloatTensor')
+
+function loadData( path )
+	local f = torch.DiskFile.new(path)
+	local Image = f:readDouble(iRow*iCol*nImages)
+	Image = torch.Tensor(Image):resize(nImages,iRow,iCol)
+	f:close()
+
+	local X = torch.Tensor(pRow*pCol,nPatch):fill(0)
+	-- sampling
+	local I = torch.rand(nPatch):mul(nImages):add(1):int()
+	local J = torch.rand(nPatch):mul(iRow - pRow):add(1):int()
+	local K = torch.rand(nPatch):mul(iCol - pCol):add(1):int()
+	for i = 1,nPatch do
+		X[{{},i}] = Image[{I[i],{J[i],J[i]+pRow-1},{K[i],K[i]+pCol-1}}]
+	end
+
+	return X
+end
 
 function test()
-	local struct = { {size=100,f=nil,bias=0} , {size=10,f=AtvFunc.logistic,bias=1} , {size=100,f=AtvFunc.logistic,bias=1} }
-	local net = sAutoEncoder:new(struct, CostFunc.squaredCost)
-	net:print()
+	print('load data...')
+	local X = loadData('image')
 
+	local struct = {	{size=pRow*pCol,f=nil,bias=0,sparse=0} , 
+						{size=25,f=AtvFunc.logistic,bias=1,sparse=1} ,
+						{size=pRow*pCol,f=AtvFunc.logistic,bias=1,sparse=0} }
+
+	local net = sAutoEncoder:new(struct, CostFunction)
+	net:initWeights()
+	--print(net.W[2])
+	--net:visualize( pRow, pCol )
+	
+	print('training...')
+	net:gradientDescent( X, X, nPatch, 2000, 0.1 , 0.9)
+	net:visualize( pRow, pCol )
 end
 
 test()
