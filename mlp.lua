@@ -14,7 +14,7 @@ end
 --   size: number of nodes, 
 --   f: activation function
 
-function mlp:new( struct , costF )
+function mlp:new( struct , costF)
 	local net = {}
 	net.Y = {} -- self.Y[layer_id] : output of units in layer_id
 	net.W = {} -- self.W[layer_id] : weights of links from layer_id to layer_id+1
@@ -100,7 +100,7 @@ function mlp:backpropagate( T )
 
 -- calculate DW
 	for i = self.nLayer-1,1,-1 do
-		DW[i] = torch.mm(self.Y[i], DZ[i+1]:t())
+		DW[i] = torch.mm(self.Y[i], DZ[i+1]:t()) + torch.mul(self.W[i],self.costF.lambda)
 	end
 	
 	for i = self.nLayer,1, -1 do
@@ -113,74 +113,111 @@ function mlp:backpropagate( T )
 	return DW, DWb
 end
 
---***************** update weight ***************--
--- newW = oldW + rate * DeltaW
-function mlp:updateWeights( DW, DWb, rate, DeltaW , DeltaWb, momentum)
+--******************* net to model ***************--
+-- unfold weights
+function mlp:unfold( W, Wb )
+	local size = 0
+	for i = 1,self.nLayer-1 do
+		local s = self.W[i]:size()
+		size = size + s[1] * s[2]
+	end
+	for i = 1,self.nLayer do
+		if self.Wb[i] ~= nil then
+			size = size + self.Wb[i]:size()[2]
+		end
+	end
+	
+	local M = torch.Tensor(size):fill(0)
+	local id = 1
+	if W == nil then 
+		W = self.W 
+		Wb = self.Wb
+	end
 
-	for i = 1, self.nLayer-1 do
-		if momentum == nil then
-			net.W[i]:add(torch.mul(DW[i], -rate))
-		else
-			DeltaW[i]:mul(momentum)
-			DeltaW[i]:add(torch.mul(DW[i],-1))
-			self.W[i]:add(torch.mul(DeltaW[i], rate))
+	for i = 1,self.nLayer-1 do
+		local s = W[i]:size()
+		M[{{id,id+s[1]*s[2]-1}}] = W[i]
+		id = id + s[1]*s[2]
+	end
+	for i = 1,self.nLayer do
+		if Wb[i] ~= nil then
+			local s = Wb[i]:size()[2]
+			M[{{id,id+s-1}}] = Wb[i]
+			id = id + s
 		end
 	end
 
-	for i = 1, self.nLayer do
-		if self.Wb[i] ~= nil then
-			if momentum == nil then
-				self.Wb[i]:add(torch.mul(DWb[i], -rate))
-			else
-				DeltaWb[i]:mul(momentum)
-				DeltaWb[i]:add(torch.mul(DWb[i],-1))
-				self.Wb[i]:add(torch.mul(DeltaWb[i], rate))
-			end
-		end
-	end	
+	return M
 end
 
---******************************* train networks with gradient descent method *************************
-function mlp:gradientDescent( X, T, batchSize, nEpoch, rate , momentum)
-	local nSample = X:size()[2]
-
-	local DeltaW = {}
-	local DeltaWb = {}
-
-	for i = 1, self.nLayer-1 do
-		DeltaW[i] = torch.Tensor(self.W[i]:size()):fill(0)		
+-- set weights
+function mlp:fold( M )
+	local id = 1
+	for i = 1,self.nLayer-1 do
+		local s = self.W[i]:size()
+		self.W[i] = M[{{id,id+s[1]*s[2]-1}}]:clone():resize(s[1],s[2])
+		id = id + s[1]*s[2]
 	end
-	for i = 1, self.nLayer do
+	for i = 1,self.nLayer do
 		if self.Wb[i] ~= nil then
-			DeltaWb[i] = torch.Tensor(self.Wb[i]:size()):fill(0)
+			local s = self.Wb[i]:size()[2]
+			self.Wb[i] = M[{{id,id+s-1}}]:clone():resize(1,s)
+			id = id + s
 		end
 	end
+end
+
+--******************************* train networks *************************
+-- optFunc from 'optim' package
+function mlp:train( X, T, batchSize, nEpoch, optFunc, optFuncState)
+	local nSample = X:size()[2]
 
 	Y = self:feedforward(X)
 	print(self.costF.apply(Y,T,self))
-	for i = 1,nEpoch do
-		print(i)
-		for j = 1,nSample/batchSize do
-			local subX = X[{{},{(j-1)*batchSize+1,j*batchSize}}]
-			local subT = T[{{},{(j-1)*batchSize+1,j*batchSize}}]
-			self:feedforward( subX)
-			DW,DWb = self:backpropagate( subT)
-			self:updateWeights( DW, DWb, rate, DeltaW, DeltaWb, momentum)
-			collectgarbage()
+
+	local j = 0
+
+	-- function return [cost,gradient]
+	local iter = 1
+	local function func( M )
+		self:fold(M)
+
+		-- extract data
+		j = j + 1
+		if j > nSample/batchSize then
+			j = 1
 		end
-		
-		Y = self:feedforward(X)
-		print(self.costF.apply(Y,T,self))
+		local subX = X[{{},{(j-1)*batchSize+1,j*batchSize}}]
+		local subT = T[{{},{(j-1)*batchSize+1,j*batchSize}}]
+
+		local Y = self:feedforward(subX)
+		cost = self.costF.apply(Y, subT, self)
+		DW,DWb = self:backpropagate( subT)
+		local Grad = self:unfold(DW, DWb)
+
+		-- for debugging
+		if math.mod(iter,10) == 0 then
+			print(iter)
+			print(cost)
+			--print(self:checkGradient(subX,subT))
+		end
+		iter = iter + 1
+
+		return cost, Grad
 	end
+	
+	local M = optFunc(func, self:unfold(), optFuncState)
+	self:fold(M)
 end
+
 
 --***************************** gradient check **************************--
 -- check if we correctly calculate gradients for W[:][1,1] and Wb[:][1]
 function mlp:checkGradient( X , T )
 	local Y = self:feedforward(X)
 	local DW, DWb = self:backpropagate(T)
-	local eps = 0.00001
-	local theta = 0.00001
+	local eps = 1e-4
+	local theta = 1e-8
 	local good = true
 
 	for i = 1,self.nLayer-1 do
@@ -190,8 +227,7 @@ function mlp:checkGradient( X , T )
 		local rMinus = self.costF.apply(self:feedforward(X),T,self)
 		self.W[i][{{1},{1}}]:add(eps)
 
-		--print((rPlus - rMinus) / (2*eps))
-		--print(DW[i][{1,1}])
+		--print(math.abs((rPlus - rMinus) / (2*eps) - DW[i][{1,1}]))
 
 		if math.abs((rPlus - rMinus) / (2*eps) - DW[i][{1,1}]) > theta then 
 			good = false
@@ -208,8 +244,7 @@ function mlp:checkGradient( X , T )
 				local rMinus = self.costF.apply(self:feedforward(X),T,self)
 				self.Wb[i][{{1},{1}}]:add(eps)
 
-				--print((rPlus - rMinus) / (2*eps))
-				--print(DWb[i][{1,1}])
+				--print(math.abs((rPlus - rMinus) / (2*eps) - DWb[i][{1,1}]))
 
 				if math.abs((rPlus - rMinus) / (2*eps) - DWb[i][{1,1}]) > theta then 
 					good = false
@@ -222,6 +257,22 @@ function mlp:checkGradient( X , T )
 	return good
 end
 
+--***************************** normalize data ***********************--
+-- normalize data to [0.1,0.9]
+function mlp:normalizeData( Data )
+	local X = Data:clone()
+	local Mean = torch.mm(torch.Tensor(X:size()[1],1):fill(1), X:mean(1))
+	Mean:mul(-1)
+	X:add(Mean)
+
+	local pstd = 3 * X:std()
+	X[torch.le(X,-pstd)] = -pstd
+	X[torch.ge(X,pstd)] = pstd
+	X:mul(1/pstd)
+	
+	X:add(1):mul(0.4):add(0.1)
+	return X
+end
 
 --************************ activation function **********************--
 AtvFunc = {}
@@ -272,14 +323,25 @@ AtvFunc.normExp = {
 
 --************************ cost **********************--
 CostFunc = {}
--- E = 0.5 * sum ( T[i] - Y[i])^2
+
+-- E = 0.5/n * sum ( T[i] - Y[i])^2
 CostFunc.squaredCost = {
+	lambda = 0.0001,
+
 	apply = function ( Y, T , net)
 		local D = torch.mul(Y, -1)
 		D:add(T)
-		return 0.5 * D:pow(2):sum() / T:size()[2]
+		
+		-- regulation
+		local reg = 0
+		for i = 1, net.nLayer-1 do
+			reg = reg + torch.cmul(net.W[i],net.W[i]):sum()
+		end
+
+		return 0.5 * D:pow(2):sum() / T:size()[2] + 0.5 * CostFunc.squaredCost.lambda * reg
 	end,
-	-- Y = f(Z)
+	
+-- Y = f(Z)
 	derivativeZ = function ( Y, T, Z, f)
 		local dZ = f.derivative(Y, Z)
 		local negT = torch.mul(T, -1)
@@ -291,12 +353,21 @@ CostFunc.squaredCost = {
 
 -- E = - sum { T[i] * logY[i] }
 CostFunc.crossEntropyCost = {
+	lambda = 0.0001,
+
 	apply = function( Y, T , net)
 		local D = torch.log(Y)
-		--if _DEBUG_ then pause() end
 		D:cmul(T)
-		return -1 * D:sum() / T:size()[2]
+
+		-- regulation
+		local reg = 0
+		for i = 1, net.nLayer-1 do
+			reg = reg + torch.cmul(net.W[i],net.W[i]):sum()
+		end
+
+		return -1 * D:sum() / T:size()[2] + CostFunc.crossEntropyCost.lambda * reg
 	end,
+
 	-- Y = f(Z)
 	-- f has to be normExp
 	derivativeZ = function( Y, T, Z, f)
@@ -316,6 +387,11 @@ function test1()
 	net.W[2] = torch.Tensor( { {0.2},{0.4} } )
 	net.Wb[2] = torch.Tensor( {0.1,0.1} ):resize(1,2)
 	net.Wb[3] = torch.Tensor( {0.3} ):resize(1,1)
+	
+	local M = net:unfold()
+	print(net.Wb[3])
+	net:fold(M)
+	print(net.Wb[3])
 
 	X = torch.Tensor({{3,2},{3,2}}):t()
 	T = torch.Tensor({1,1}):resize(1,2)
