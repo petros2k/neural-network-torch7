@@ -1,4 +1,5 @@
 require 'mlp'
+require 'optim'
 
 torch.setdefaulttensortype('torch.FloatTensor')
 
@@ -7,109 +8,6 @@ function errorRate( Y, T )
 	local temp, IY = torch.max(Y,1)
 	temp, IT = torch.max(T,1)
 	return torch.ne(IY,IT):sum() / Y:size()[2]
-end
-
--- C = E + wdCoeff/2 * sum_i(wi^2)
-function calLost( net, T, config )
-	local lost = net.costF.apply(net.Y[net.nLayer], T) / T:size()[2]
-	local wLost = 0
-	for i,W in pairs(net.W) do
-		wLost = wLost + torch.pow(W,2):sum()
-	end
-	for i,Wb in pairs(net.Wb) do
-		wLost = wLost + torch.pow(Wb,2):sum()
-	end
-	return lost + config.wdCoeff * wLost/2
-end
-
--- dC/dwi = dE/dwi + wdCoeff * wi
-function calDLostDW( net, T, config )
-	local DW, DWb = net:backpropagate( T )
-	
-	for i = 1, net.nLayer-1 do
-		DW[i]:add(torch.mul(net.W[i], config.wdCoeff))
-	end
-	for i = 1, net.nLayer do
-		if net.Wb[i] ~= nil then
-			DWb[i]:add(torch.mul(net.Wb[i], config.wdCoeff))
-		end
-	end
-	
-	return DW, DWb
-end
-
--- delta_wi = delta_wi_old * momentum - dE/dwi
--- wi = wi + learnRate * delta_wi
-function updateWeights( net, DW, DWb, DeltaW, DeltaWb, config )
-	for i = 1, net.nLayer-1 do
-		DeltaW[i]:mul(config.momentum)
-		DeltaW[i]:add(torch.mul(DW[i],-1))
-		net.W[i]:add(torch.mul(DeltaW[i], config.learnRate))
-	end
-
-	for i = 1, net.nLayer do
-		if net.Wb[i] ~= nil then
-			DeltaWb[i]:mul(config.momentum)
-			DeltaWb[i]:add(torch.mul(DWb[i],-1))
-			net.Wb[i]:add(torch.mul(DeltaWb[i], config.learnRate))
-		end
-	end
-end
-
--- training net with gradient descent
-function gradientDescent( net, TData, VData, TestData, config)
-	local nSample = TData.X:size()[2]
-	local trainLostGraph = {}
-	local validLostGraph = {}
-
-	local bestNet = nil
-	local lowestValidLost = 100000
-
-	-- for momentum updating weights
-	local DeltaW = {}
-	local DeltaWb = {}
-
-	for i = 1, net.nLayer-1 do
-		DeltaW[i] = torch.Tensor(net.W[i]:size()):fill(0)		
-	end
-	for i = 1, net.nLayer do
-		if net.Wb[i] ~= nil then
-			DeltaWb[i] = torch.Tensor(net.Wb[i]:size()):fill(0)
-		end
-	end
-
-	-- run nEpoch epoches
-	for i = 1, config.nEpoch do
-		print('------ epoch ' .. i)
-		if math.mod(i,1) == 0 then
-			local Y = net:feedforward(VData.X)
-			print("validate " .. calLost(net , VData.T, config))
-			print("error rate " .. errorRate( Y, VData.T))
-
-			Y = net:feedforward(TestData.X)
-			print("validate " .. calLost(net , TestData.T, config))
-			print("error rate " .. errorRate( Y, TestData.T))
-			collectgarbage()
-		end
-
-		for j = 1,nSample/config.batchSize do
-			local T = TData.T[{{},{(j-1)*config.batchSize+1, j*config.batchSize}}]
-			local X = TData.X[{{},{(j-1)*config.batchSize+1, j*config.batchSize}}]
-
-			-- test on batch
-			if math.mod(j,100) == 0 then 
-				net:feedforward(X)
-				print("test batch " .. j .. " : " .. calLost(net , T, config))
-				collectgarbage()
-			end
-
-			-- one step gradient descent 
-			net:feedforward( X )
-			local DW, DWb = calDLostDW( net, T, config )
-			updateWeights( net, DW, DWb, DeltaW, DeltaWb, config )		
-		end
-		collectgarbage()
-	end
 end
 
 -- read data
@@ -169,19 +67,7 @@ end
 -- create net
 function createNeuralNet( struct )
 	local net = mlp:new( struct, CostFunc.crossEntropyCost )
-	
-	-- init weights
-	for i = 1, net.nLayer-1 do
-		net.W[i] = torch.randn(net.W[i]:size())
-		net.W[i]:mul(0.1)
-	end
-
-	for i = 1, net.nLayer do
-		if net.Wb[i] ~= nil then
-			net.Wb[i] = torch.randn(net.Wb[i]:size())
-			net.Wb[i]:mul(0.1)
-		end
-	end
+	net:initWeights()
 	return net
 end
 
@@ -193,12 +79,6 @@ function main()
 	local nInputUnits = 28*28
 	local nOutputUnits = 10
 	local nHidUnits = 500
-
-	config.momentum = 0.9
-	config.learnRate = 0.1
-	config.nEpoch = 50
-	config.batchSize = 100
-	config.wdCoeff = 0 -- don't know why it doesn't work (need to check / test it again)
 
 	local struct = {
 		{	size = nInputUnits,
@@ -213,12 +93,24 @@ function main()
 	}
 
 	local net = createNeuralNet( struct )
+
+	-- load data
+	print('load train data')
 	local TrainData, ValidData = splitDataForValidation( loadData("digitData/train-images.idx3-ubyte", "digitData/train-labels.idx1-ubyte"), 10 )
+	print('load test data')
 	local TestData = loadData("digitData/t10k-images.idx3-ubyte", "digitData/t10k-labels.idx1-ubyte")
-	gradientDescent ( net, TrainData, ValidData, TestData, config)
+	
+	-- train
+	print('training...')
+	net:train( TrainData.X, TrainData.T, 5000, optim.lbfgs , {maxIter = 200, learningRate = 1})
+	
+	-- test
+	local Y = net:feedforward(TestData.X)
+	local err = errorRate(Y, TestData.T)
+	print(err)
 	
 end
 
---main()
+main()
 
 

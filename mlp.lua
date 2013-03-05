@@ -169,7 +169,7 @@ end
 
 --******************************* train networks *************************
 -- optFunc from 'optim' package
-function mlp:train( X, T, batchSize, nEpoch, optFunc, optFuncState)
+function mlp:train( X, T, batchSize, optFunc, optFuncState)
 	local nSample = X:size()[2]
 
 	Y = self:feedforward(X)
@@ -353,7 +353,7 @@ CostFunc.squaredCost = {
 
 -- E = - sum { T[i] * logY[i] }
 CostFunc.crossEntropyCost = {
-	lambda = 0.0001,
+	lambda = 0.00001,
 
 	apply = function( Y, T , net)
 		local D = torch.log(Y)
@@ -365,7 +365,7 @@ CostFunc.crossEntropyCost = {
 			reg = reg + torch.cmul(net.W[i],net.W[i]):sum()
 		end
 
-		return -1 * D:sum() / T:size()[2] + CostFunc.crossEntropyCost.lambda * reg
+		return -1 * D:sum() / T:size()[2] + 0.5*CostFunc.crossEntropyCost.lambda * reg
 	end,
 
 	-- Y = f(Z)

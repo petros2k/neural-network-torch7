@@ -200,7 +200,7 @@ function test()
 	net:initWeights()
 	
 	print('training...')
-	net:train( X, X, nPatch, 1, optim.lbfgs , {maxIter = 400, learningRate = 1})
+	net:train( X, X, nPatch, 1, optim.lbfgs , {maxIter = 100, learningRate = 1})
 	net:visualize( pRow, pCol )
 end
 
