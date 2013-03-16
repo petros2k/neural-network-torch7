@@ -207,7 +207,7 @@ end
 --output:
 --	tree
 function reAutoEncoder:forward( Sentence, Label , config )
-	
+
 	local W11 = self.W11
 	local W12 = self.W12
 	local W21 = self.W21
@@ -225,6 +225,7 @@ function reAutoEncoder:forward( Sentence, Label , config )
 	local dicLen = L:size(2)
 	local nCat = self.bCat:size(1)
 
+	local config = config or {alpha = 0, lambda = 0}
 	local alpha = config.alpha
 	local len = Sentence:size(1)
 	
@@ -436,36 +437,108 @@ end
 --************************ compute cost and gradient *****************--
 --input:
 --output:
-function reAutoEncoder:computeCostAndGrad( Sentences, Labels , config)
+require 'parallel'
+
+-- worker function 
+function worker()
+
+	require 'RAE'
+	local data = parallel.parent:receive()
+
+	local Sentences = data.Sentences
+	local Labels = data.Labels
+	local rae = data.rae
 	local nSen = #Sentences
+	local config = data.config
 
 	local grad = {
-		L = torch.zeros(self.L:size()),
-		W11 = torch.zeros(self.W11:size()),
-		W12 = torch.zeros(self.W12:size()),
-		b1 = torch.zeros(self.b1:size()),
-		W21 = torch.zeros(self.W21:size()),
-		W22 = torch.zeros(self.W22:size()),
-		b21 = torch.zeros(self.b21:size()),
-		b22 = torch.zeros(self.b22:size()),
-		WCat = torch.zeros(self.WCat:size()),
-		bCat = torch.zeros(self.bCat:size())
+		L = torch.zeros(rae.L:size()),
+		W11 = torch.zeros(rae.W11:size()),
+		W12 = torch.zeros(rae.W12:size()),
+		b1 = torch.zeros(rae.b1:size()),
+		W21 = torch.zeros(rae.W21:size()),
+		W22 = torch.zeros(rae.W22:size()),
+		b21 = torch.zeros(rae.b21:size()),
+		b22 = torch.zeros(rae.b22:size()),
+		WCat = torch.zeros(rae.WCat:size()),
+		bCat = torch.zeros(rae.bCat:size())
 	}
 
 	local cost = 0
 	for i = 1, nSen do
 		local Sen = Sentences[i]
 		local Label = Labels[i]
-		local tree = self:forward(Sen, Label, config) 
-		cost = cost + self:backpropagate(tree, config , grad)
+		local tree = reAutoEncoder.forward(rae, Sen, Label, config) 
+		cost = cost + reAutoEncoder.backpropagate(rae, tree, config , grad)
 
 		if math.mod(i,100) == 0 then
 			print('i = ' .. i .. ' : cost = ' .. cost )
 		end
 	end
-	cost = cost * (1/nSen)
 
-	return cost, self:fold(grad):mul(1/nSen)
+	parallel.parent:send( { cost = cost, grad = reAutoEncoder.fold(rae, grad) } )
+end
+	
+-- parent call
+function parent(param)
+
+	local Sentences = param.Sentences
+	local Labels = param.Labels
+	local nSen = #Sentences
+	local nProcess = param.config.nProcess
+	local rae = param.rae
+
+	-- split data
+	local size = nSen / nProcess
+	local children = parallel.nfork(nProcess)
+	children:exec(worker)
+
+	-- send data
+	for i = 1,nProcess do
+		local data = {Sentences = {}, Labels = {}, rae = param.rae, config = param.config}
+		for j = 1,size do
+			data.Sentences[j] = Sentences[(i-1)*size+j]
+			data.Labels[j] = Labels[(i-1)*size+j]
+		end
+		children[i]:send(data)
+	end
+
+	-- receive results
+	for i = 1, nProcess do
+		local reply = children[i]:receive()
+		param.totalCost = param.totalCost + reply.cost
+		if param.totalGrad == nil then
+			param.totalGrad = reply.grad
+		else
+			param.totalGrad:add(reply.grad)
+		end
+	end
+
+	children:sync()
+
+	-- finalize
+	local M = param.rae:fold()
+	param.totalCost = param.totalCost * (1/nSen) + param.config.lambda/2 * torch.pow(M,2):sum()
+	param.totalGrad:mul(1/nSen):add(torch.mul(M,param.config.lambda))
+end
+
+function reAutoEncoder:computeCostAndGrad( Sentences, Labels , config )
+	
+	local param = {
+		rae = self,
+		config = config,
+		Sentences = Sentences,
+		Labels = Labels,
+		totalCost = 0,
+		totalGrad = nil
+	}
+
+
+	local ok,err = pcall(parent, param)
+	if not ok then 	print(err) end
+	--parallel.close()
+	
+	return param.totalCost, param.totalGrad
 end
 
 -- check gradient
@@ -506,11 +579,29 @@ function reAutoEncoder:checkGradient(Sentences, Labels, config)
 	return good
 end
 
+--******************************** test **************************
+function reAutoEncoder:test( Sentences, Labels )
+	local nSen = #Sentences
+	local nCorrect = 0
+	for i = 1, nSen do
+		local parse = self:forward( Sentences[i], Labels[i] )
+		local _,y = parse.predict:max(1)
+		y = y[{1,1}] 
+		if Labels[i][{y,1}] == 1 then nCorrect = nCorrect + 1 end
+	end
+	return nCorrect / nSen
+end
+
 --******************************* train networks *************************
 ---- optFunc from 'optim' package
-function reAutoEncoder:train( Sentences, Labels, batchSize, optFunc, optFuncState)
-	local nSample = #Sentences
+function reAutoEncoder:train( Data, batchSize, optFunc, optFuncState, config)
+	local trainData = Data.train
+	local testData = Data.test
+
+	local nSample = #trainData.Sentences
 	local j = 0
+
+	--print(self:test(testData.Sentences, testData.Labels))
 
 	--return [cost,gradient]
 	local iter = 1
@@ -521,12 +612,12 @@ function reAutoEncoder:train( Sentences, Labels, batchSize, optFunc, optFuncStat
 
 		-- extract data
 		j = j + 1
-		if j > nSample/batchSize then
-			j = 1
-		end
-		local subSentences = Sentences
-		local subLabels = Labels
-		local cost, Grad = self:computeCostAndGrad(Sentences, Labels, {lambda = 0.2, alpha = 1e-4})
+		--if j > nSample/batchSize then
+		--	j = 1
+		--end
+		--local subSentences = Sentences
+		--local subLabels = Labels
+		local cost, Grad = self:computeCostAndGrad(trainData.Sentences, trainData.Labels, config)
 
 		-- for debugging
 		if math.mod(iter,1) == 0 then
@@ -534,6 +625,9 @@ function reAutoEncoder:train( Sentences, Labels, batchSize, optFunc, optFuncStat
 			print('cost: ' .. cost)
 			print('time: ' .. timer:time().real) timer = torch.Timer()
 			--print(self:checkGradient(subX,subT))
+		end
+		if math.mod(iter,10) == 0 then
+			print('accuracy = ' .. self:test(testData.Sentences, testData.Labels))
 		end
 		iter = iter + 1
 		collectgarbage()
