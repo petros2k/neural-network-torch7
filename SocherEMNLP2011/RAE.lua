@@ -113,7 +113,7 @@ function reAutoEncoder:new( struct )
 	return rae
 end
 
--- load network from file
+--[[load network from file
 function reAutoEncoder:load( filename , func, funcPrime )
 	local file = torch.DiskFile.new(filename)
 	local buff = file:readInt(3)
@@ -132,6 +132,25 @@ function reAutoEncoder:load( filename , func, funcPrime )
 	rae.funcPrime = funcPrime or norm2TanhPrime
 	rae.L = normalize(rae.L, 2)
 
+	return rae
+end
+]]
+
+-- save rae into a bin file
+function reAutoEncoder:save( filename )
+	local file = torch.DiskFile(filename, 'w')
+	file:binary()
+	file:writeObject(self)
+	file:close()
+end
+
+-- create rae from file
+function reAutoEncoder:load( filename )
+	local file = torch.DiskFile(filename, 'r')
+	file:binary()
+	local rae = file:readObject()
+	setmetatable(rae, reAutoEncoder_mt)
+	file:close()
 	return rae
 end
 
@@ -471,9 +490,9 @@ function worker()
 		local tree = reAutoEncoder.forward(rae, Sen, Label, config) 
 		cost = cost + reAutoEncoder.backpropagate(rae, tree, config , grad)
 
-		if math.mod(i,100) == 0 then
-			print('i = ' .. i .. ' : cost = ' .. cost )
-		end
+		--if math.mod(i,100) == 0 then
+		--	print('i = ' .. i .. ' : cost = ' .. cost )
+		--end
 	end
 
 	parallel.parent:send( { cost = cost, grad = reAutoEncoder.fold(rae, grad) } )
@@ -489,8 +508,8 @@ function parent(param)
 	local rae = param.rae
 
 	-- split data
-	local size = nSen / nProcess
-	local children = parallel.nfork(nProcess)
+	local size = math.floor(nSen / nProcess)
+	local children = parallel.sfork(nProcess)
 	children:exec(worker)
 
 	-- send data
@@ -619,7 +638,7 @@ function reAutoEncoder:train( Data, batchSize, optFunc, optFuncState, config)
 		--local subLabels = Labels
 		local cost, Grad = self:computeCostAndGrad(trainData.Sentences, trainData.Labels, config)
 
-		-- for debugging
+		-- for visualization
 		if math.mod(iter,1) == 0 then
 			print('--- iter: ' .. iter)
 			print('cost: ' .. cost)
@@ -628,7 +647,10 @@ function reAutoEncoder:train( Data, batchSize, optFunc, optFuncState, config)
 		end
 		if math.mod(iter,10) == 0 then
 			print('accuracy = ' .. self:test(testData.Sentences, testData.Labels))
+			self:save('model.' .. math.floor(iter / 10))
 		end
+		io.flush()
+
 		iter = iter + 1
 		collectgarbage()
 		return cost, Grad

@@ -73,7 +73,7 @@ function loadData( negPath, posPath )
 			
 			-- for test only
 			--sum = sum + 1
-			--if sum > 1000 then break end
+			--if sum > 100 then break end
 		end
 		file:close()
 	end
@@ -131,9 +131,13 @@ function main()
 	local rae = reAutoEncoder:new(struct)
 
 	print('train...')
+	--rae:save('model')
+	--rae = reAutoEncoder:load('model.1') print(rae)
+	
 	rae:train(Data, 100, optim.lbfgs, 
 			{maxIter=100, learningRate=1},
-			{alpha = 0.2, lambda = 1e-4, nProcess = 2})
+			{alpha = 0.2, lambda = 1e-4, nProcess = 14})
+	
 end
 
 main()
