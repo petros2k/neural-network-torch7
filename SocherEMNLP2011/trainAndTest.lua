@@ -110,34 +110,47 @@ function splitData (Sentences , Labels , nPart)
 	}
 end
 
-
 --*********************** main  ********************
 --require 'debugger'
+require 'mlp'
+
+local MODE_TRAIN = 1
+local MODE_TEST = 2
 
 function main()
+	
+	local mode = MODE_TEST	
 
 	-- load data
 	print('load data...')
 	local Sentences, Labels, wordMap, dicLen = loadData( 'data/rt-polarity/sentences_neg.txt', 'data/rt-polarity/sentences_pos.txt')
 	local Data = splitData(Sentences, Labels, 5)
-		
-	-- create net
-	local dim = 100
-	local nCat = 2
-
-	print('create network...')
-	local L = torch.randn(dim, dicLen):mul(0.01)
-	local struct = {nCategory = 2, Lookup = L , func = tanh, funcPrime = norm2TanhPrime }
-	local rae = reAutoEncoder:new(struct)
-
-	print('train...')
-	--rae:save('model')
-	--rae = reAutoEncoder:load('model.1') print(rae)
 	
-	rae:train(Data, 100, optim.lbfgs, 
-			{maxIter=100, learningRate=1},
-			{alpha = 0.2, lambda = 1e-4, nProcess = 14})
-	
+	if mode == MODE_TRAIN then
+
+		-- create net
+		local dim = 100
+		local nCat = 2
+
+		print('create network...')
+		local L = torch.randn(dim, dicLen):mul(0.01)
+		local struct = {nCategory = 2, Lookup = L , func = tanh, funcPrime = norm2TanhPrime }
+		local rae = reAutoEncoder:new(struct)
+
+		print('train...')
+		rae:train(Data, 100, optim.lbfgs, 
+				{maxIter=100, learningRate=1},
+				{alpha = 0.2, lambda = 1e-4})
+
+	elseif mode == MODE_TEST then
+
+		rae = reAutoEncoder:load('model.7')
+		local classifier = rae:trainFinalClassifier(Data.train.Sentences, Data.train.Labels, 
+				optim.lbfgs, {maxIter=1000, learningRate=1})
+			
+		local accuracy = rae:test(classifier, Data.test.Sentences, Data.test.Labels)
+		print('accuracy: ' .. accuracy) io.flush()
+	end
 end
 
 main()

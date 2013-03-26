@@ -1,3 +1,5 @@
+NPROCESS = 14
+
 --**************** RAE class ******************--
 reAutoEncoder = {}
 reAutoEncoder_mt = {__index = reAutoEncoder}
@@ -244,9 +246,11 @@ function reAutoEncoder:forward( Sentence, Label , config )
 	local dicLen = L:size(2)
 	local nCat = self.bCat:size(1)
 
-	local config = config or {alpha = 0, lambda = 0}
+	local config = config or {alpha = 1, lambda = 1e04}	-- default is unsupervised learning
 	local alpha = config.alpha
 	local len = Sentence:size(1)
+
+	Label = Label or torch.zeros(nCat, 1)	-- for testing with unknown label
 	
 	-- building tree
 	curFeature = torch.zeros(dim,len)
@@ -484,18 +488,20 @@ function worker()
 	}
 
 	local cost = 0
+	local Trees = {}
 	for i = 1, nSen do
 		local Sen = Sentences[i]
 		local Label = Labels[i]
-		local tree = reAutoEncoder.forward(rae, Sen, Label, config) 
+		local tree = reAutoEncoder.forward(rae, Sen, Label, config)
 		cost = cost + reAutoEncoder.backpropagate(rae, tree, config , grad)
+		Trees[i] = tree
 
 		--if math.mod(i,100) == 0 then
 		--	print('i = ' .. i .. ' : cost = ' .. cost )
 		--end
 	end
 
-	parallel.parent:send( { cost = cost, grad = reAutoEncoder.fold(rae, grad) } )
+	parallel.parent:send( { cost = cost, grad = reAutoEncoder.fold(rae, grad) , Trees = Trees } )
 end
 	
 -- parent call
@@ -504,32 +510,38 @@ function parent(param)
 	local Sentences = param.Sentences
 	local Labels = param.Labels
 	local nSen = #Sentences
-	local nProcess = param.config.nProcess
 	local rae = param.rae
 
 	-- split data
-	local size = math.floor(nSen / nProcess)
-	local children = parallel.sfork(nProcess)
+	local size = math.ceil(nSen / NPROCESS)
+	local children = parallel.sfork(NPROCESS)
 	children:exec(worker)
 
 	-- send data
-	for i = 1,nProcess do
+	for i = 1, NPROCESS do
 		local data = {Sentences = {}, Labels = {}, rae = param.rae, config = param.config}
 		for j = 1,size do
-			data.Sentences[j] = Sentences[(i-1)*size+j]
-			data.Labels[j] = Labels[(i-1)*size+j]
+			local id = (i-1)*size+j
+			if id > nSen then break end
+			data.Sentences[j] = Sentences[id]
+			data.Labels[j] = Labels[id]
 		end
 		children[i]:send(data)
 	end
 
 	-- receive results
-	for i = 1, nProcess do
+	for i = 1, NPROCESS do
 		local reply = children[i]:receive()
 		param.totalCost = param.totalCost + reply.cost
 		if param.totalGrad == nil then
 			param.totalGrad = reply.grad
 		else
 			param.totalGrad:add(reply.grad)
+		end
+
+		if param.Trees == nil then param.Trees = {} end
+		for j = 1,#reply.Trees do
+			param.Trees[#param.Trees+1] = reply.Trees[j]
 		end
 	end
 
@@ -557,7 +569,7 @@ function reAutoEncoder:computeCostAndGrad( Sentences, Labels , config )
 	if not ok then 	print(err) end
 	--parallel.close()
 	
-	return param.totalCost, param.totalGrad
+	return param.totalCost, param.totalGrad, param.Trees
 end
 
 -- check gradient
@@ -598,17 +610,98 @@ function reAutoEncoder:checkGradient(Sentences, Labels, config)
 	return good
 end
 
---******************************** test **************************
-function reAutoEncoder:test( Sentences, Labels )
+--************************** parse *************************
+function reAutoEncoder:parse( Sentences )
 	local nSen = #Sentences
-	local nCorrect = 0
+	local nCat = self.bCat:size(1)
+
+	local Labels = {}
 	for i = 1, nSen do
-		local parse = self:forward( Sentences[i], Labels[i] )
-		local _,y = parse.predict:max(1)
-		y = y[{1,1}] 
-		if Labels[i][{y,1}] == 1 then nCorrect = nCorrect + 1 end
+		Labels[i] = torch.zeros(nCat, 1)
 	end
-	return nCorrect / nSen
+	config = {alpha = 1, lambda = 0}
+	
+	local _,_,Trees = self:computeCostAndGrad( Sentences, Labels, config )
+	return Trees
+end
+
+function reAutoEncoder:getFeature( tree ) 
+	local dim = self.L:size(1)
+	local innerFeat = torch.zeros(dim,1)
+	
+	local acc 
+	acc = function( t  ) 
+		innerFeat:add(t.feature)
+		if t.child1 ~= nil and t.child2 ~= nil then
+			acc( t.child1 )
+			acc( t.child2 )
+		end
+	end
+
+	acc(tree)
+	innerFeat:mul(1 / (2*tree.cover-1))
+
+	local feature = torch.Tensor(2*dim,1)
+	feature[{{1,dim},{1}}] = tree.feature
+	feature[{{dim+1,2*dim},{1}}] = innerFeat
+
+	return feature
+end
+
+--*********************** train the final classifier *****************
+require 'mlp'
+function reAutoEncoder:trainFinalClassifier( Sentences, Labels, optFunc, optFuncConfig )
+	local dim = self.L:size(1)
+	local nCat = self.bCat:size(1)
+
+	local struct =  { 
+		{size = 2*dim, f = nil, bias = 0},
+		{size = nCat, f = AtvFunc.normExp, bias = 1}
+	}
+	local classifier = mlp:new( struct , CostFunc.crossEntropyCost )
+	classifier:initWeights()
+	
+	local Trees = self:parse(Sentences)
+	local nSample = #Trees
+	local X = torch.Tensor(2*dim, nSample)
+	local T = torch.Tensor(nCat, nSample)
+
+	for i = 1 , nSample do
+		X[{{},{i}}] = self:getFeature(Trees[i])
+		T[{{},{i}}] = Labels[i]
+	end
+
+	classifier:train(X, T, nSample, optFunc, optFuncConfig)
+	return classifier
+end
+
+--******************************** test **************************
+function reAutoEncoder:test( classifier, Sentences, Labels)
+
+	local dim = self.L:size(1)
+	local nCat = self.bCat:size(1)
+
+	local Trees = self:parse(Sentences)
+	local nSample = #Trees
+	local X = torch.Tensor(2*dim, nSample)
+	local T = torch.Tensor(nCat, nSample)
+
+	for i = 1 , nSample do
+		X[{{},{i}}] = self:getFeature(Trees[i])
+		T[{{},{i}}] = Labels[i]
+	end
+	
+	local Y = classifier:feedforward(X)
+ 	
+	-- error rate
+	local errorRate = function( Y, T )
+        	local temp, IY = torch.max(Y,1)
+	        temp, IT = torch.max(T,1)
+        	return torch.ne(IY,IT):sum() / Y:size()[2]
+	end
+
+
+	return 1 - errorRate(Y,T)
 end
 
 --******************************* train networks *************************
@@ -663,7 +756,7 @@ function reAutoEncoder:train( Data, batchSize, optFunc, optFuncState, config)
 end
 
 --*********************************** main ******************************--
-function main ()
+function test ()
 	local rae = reAutoEncoder:load( 'rae.txt' )
 	local Sentences = {
 			torch.Tensor({2,3}),
@@ -686,4 +779,4 @@ function main ()
 	print(rae:checkGradient(Sentences, Labels, config))
 end
 
---main()
+--test()
